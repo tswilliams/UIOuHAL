@@ -13,6 +13,7 @@ int main(int argc, char* argv[])
   std::cout << "Using connection file: " << connectionFile << std::endl;
 
   // Get the connection manager
+  uhal::setLogLevelTo(uhal::Notice());
   uhal::ConnectionManager manager( connectionFile.c_str(), std::vector<std::string>(1,"uioaxi-1.0") ); 
   std::cout << "Constructed ConnectionManager" << std::endl;
 
@@ -41,6 +42,19 @@ int main(int argc, char* argv[])
   std::cout << "Succesfully read register" << std::endl;
   std::cout << "Value: 0x" << std::hex << ret_uio.value() << std::endl; 
   
+  // 'Remote' register using uIOuHAL
+  std::string registerNameRemoteUIO("CM_V_INFO.GIT_HASH_1");
+  std::cout << "Trying to read register: " << registerNameRemoteUIO << " with UIOuHAL interface" << std::endl;
+  try {
+    ret_uio = hw_uio->getNode(registerNameRemoteUIO).read();
+    hw_uio->dispatch();
+    std::cout << "WARNING: NO EXCEPTION THROWN" << std::endl;
+  }
+  catch (const std::exception& e) {
+    std::cout << "Exception caught (as expected): " << e.what() << std::endl;
+  }
+
+
   std::string registerNameMMap("info.magic");
   std::cout << "Trying to read register: " << registerNameMMap << " with MemMap interface" << std::endl;
   uhal::ValWord<uint32_t> ret_mmap;
