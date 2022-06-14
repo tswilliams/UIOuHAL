@@ -69,6 +69,83 @@
 using namespace uioaxi;
 using namespace boost::filesystem;
 
+/////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////
+
+namespace uhal {
+
+namespace exception {
+UHAL_DEFINE_DERIVED_EXCEPTION_CLASS ( SigBusError , TransactionLevelError, "Exception caused by a SIGBUS signal." );
+}
+
+class SigBusGuard {
+public:
+  SigBusGuard(const std::string&);
+
+  ~SigBusGuard();
+
+private:
+  static void handle(int);
+  std::lock_guard<std::mutex> mLockGuard;
+  struct sigaction mAction;
+  struct sigaction mOriginalAction;
+
+  static std::mutex sMutex;
+  static sigjmp_buf sEnv;
+};
+
+std::mutex SigBusGuard::sMutex;
+
+
+SigBusGuard::SigBusGuard(const std::string& aMessage) :
+  mLockGuard(sMutex)
+{
+  // 1) Register our signal handler for SIGBUS, saving original in mOriginalAction
+  // memset(&saBusError,0,sizeof(saBusError)); //Clear struct
+  std::cout << "Registering our signal handler" << std::endl;
+  mAction.sa_handler = SigBusGuard::handle;
+  sigemptyset(&mAction.sa_mask);
+  sigaction(SIGBUS, &mAction, &mOriginalAction);
+
+  // 2) Update this thread's signal mask to unblock SIGBUS (and throw if already unblocked)
+
+  // 3) Raise exception with supplied message if SIGBUS received
+  //    Note: First time sigsetjmp is called it just stores the context of where it is called
+  //          and returns 0. If a signal is received and siglongjmp is called in the handler,
+  //          then the thread will return here and sigsetjmp will then return that signal
+  if (SIGBUS == sigsetjmp(sEnv,1)) {
+    exception::SigBusError lException;
+    log ( lException , aMessage);
+    throw lException;
+  }
+}
+
+
+SigBusGuard::~SigBusGuard()
+{
+  // 1) Restore the original signal handler for SIGBUS
+  sigaction(SIGBUS, &mOriginalAction, NULL);
+  std::cout << "Restoring original signal handler" << std::endl;
+
+  // 2) Update this thread's signal mask to block SIGBUS again
+}
+
+
+void SigBusGuard::handle(int aSignal)
+{
+  // Jump back to the point in the stack described by sEnv (as set by sigsetjmp), with sigsetjmp now returning SIGBUS
+  if (aSignal == SIGBUS) {
+    // FIXME: Check return code
+    siglongjmp(sEnv, aSignal);
+  }
+}
+
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////
+
+
 //This macro handles the possibility of a SIG_BUS signal and property throws an exception
 //The command you want to run is passed via ACESS and will be in a if{}else{} block, so
 //Call it appropriately. 
@@ -81,17 +158,24 @@ using namespace boost::filesystem;
 // sigsetjmp stores the context of where it is called and returns 0 initially.   
 // if siglongjmp (in handler) is called, execution returns to this point and acts as if
 // the call returned with the value specified in the second argument of siglongjmp (in handler)
-#define BUS_ERROR_PROTECTION(ACCESS,ADDRESS)					\
-  if(SIGBUS == sigsetjmp(env,1)){						\
-    uhal::exception::UIOBusError * e = new uhal::exception::UIOBusError();\
+// #define BUS_ERROR_PROTECTION(ACCESS,ADDRESS)					\
+//   if(SIGBUS == sigsetjmp(env,1)){						\
+//     uhal::exception::UIOBusError * e = new uhal::exception::UIOBusError();\
+//     char error_message[] = "Reg: 0x00000000"; \
+//     snprintf(error_message,strlen(error_message),"Reg: 0x%08X",ADDRESS); \
+//     e->append(error_message); \
+//     throw *e;\
+//   }else{ \
+//     ACCESS;					\
+//   }
+
+#define BUS_ERROR_PROTECTION(ACCESS,ADDRESS) \
+  if (true) {\
     char error_message[] = "Reg: 0x00000000"; \
     snprintf(error_message,strlen(error_message),"Reg: 0x%08X",ADDRESS); \
-    e->append(error_message); \
-    throw *e;\
-  }else{ \
-    ACCESS;					\
+    uhal::SigBusGuard lGuard(error_message);\
+    ACCESS;\
   }
-
 
 
 //Signal handling for sigbus
