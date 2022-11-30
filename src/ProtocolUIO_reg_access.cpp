@@ -76,6 +76,9 @@ namespace uhal {
 
 namespace exception {
 UHAL_DEFINE_DERIVED_EXCEPTION_CLASS ( SigBusError , TransactionLevelError, "Exception caused by a SIGBUS signal." );
+UHAL_DEFINE_EXCEPTION_CLASS ( SignalHandlerNotRegistered , "Exception associated with signal handler registration errors." );
+UHAL_DEFINE_EXCEPTION_CLASS ( SignalMaskingFailure , "Exception associated with signal masking errors." );
+UHAL_DEFINE_EXCEPTION_CLASS ( SignalNotBlocked , "Exception associated with SIGBUS not being masked when using uHAL." );
 }
 
 class SigBusGuard {
@@ -84,30 +87,68 @@ public:
 
   ~SigBusGuard();
 
+  void blockSIGBUS();
+
 private:
   static void handle(int);
   std::lock_guard<std::mutex> mLockGuard;
   struct sigaction mAction;
   struct sigaction mOriginalAction;
+  sigset_t mOriginalMask;
 
   static std::mutex sMutex;
   static sigjmp_buf sEnv;
 };
 
 std::mutex SigBusGuard::sMutex;
+sigjmp_buf SigBusGuard::sEnv;
+
+
+void SigBusGuard::blockSIGBUS()
+{
+  sigset_t lSigSet;
+  sigemptyset(&lSigSet);
+  sigaddset(&lSigSet, SIGBUS);
+  const int lErrNo = pthread_sigmask(SIG_BLOCK, &lSigSet, NULL);
+  if (lErrNo != 0) {
+    exception::SignalMaskingFailure lExc;
+    log(lExc, "Failed to update signal mask; errno=", Integer(lErrNo), ", meaning ", Quote (strerror(lErrNo)));
+    throw lExc;
+  }
+}
 
 
 SigBusGuard::SigBusGuard(const std::string& aMessage) :
   mLockGuard(sMutex)
 {
   // 1) Register our signal handler for SIGBUS, saving original in mOriginalAction
-  // memset(&saBusError,0,sizeof(saBusError)); //Clear struct
   std::cout << "Registering our signal handler" << std::endl;
   mAction.sa_handler = SigBusGuard::handle;
   sigemptyset(&mAction.sa_mask);
-  sigaction(SIGBUS, &mAction, &mOriginalAction);
+  if (sigaction(SIGBUS, &mAction, &mOriginalAction) != 0) {
+    exception::SignalHandlerNotRegistered lExc;
+    log(lExc, "Failed to register SIGBUS handler (in SigBusGuard constructor); errno=", Integer(errno), ", meaning ", Quote (strerror(errno)));
+    throw lExc;
+  }
 
   // 2) Update this thread's signal mask to unblock SIGBUS (and throw if already unblocked)
+  sigset_t lMaskedSignals;
+  sigfillset(&lMaskedSignals);
+  sigdelset(&lMaskedSignals, SIGKILL); // Unblockable
+  sigdelset(&lMaskedSignals, SIGSTOP); // Unblockable
+  sigdelset(&lMaskedSignals, SIGINT); // Ctrl+C
+  sigdelset(&lMaskedSignals, SIGBUS);
+  const int lErrNo = pthread_sigmask(SIG_SETMASK, &lMaskedSignals, &mOriginalMask);
+  if (lErrNo != 0) {
+    exception::SignalMaskingFailure lExc;
+    log(lExc, "Failed to update signal mask in SigBusGuard constructor; errno=", Integer(lErrNo), ", meaning ", Quote (strerror(lErrNo)));
+    throw lExc;
+  }
+  if (sigismember(&mOriginalMask, SIGBUS) != 1) {
+    exception::SignalNotBlocked lExc;
+    log(lExc, "SIGBUS must be blocked (by all threads) before using SigBusGuard");
+    throw lExc;
+  }
 
   // 3) Raise exception with supplied message if SIGBUS received
   //    Note: First time sigsetjmp is called it just stores the context of where it is called
@@ -115,7 +156,7 @@ SigBusGuard::SigBusGuard(const std::string& aMessage) :
   //          then the thread will return here and sigsetjmp will then return that signal
   if (SIGBUS == sigsetjmp(sEnv,1)) {
     exception::SigBusError lException;
-    log ( lException , aMessage);
+    log (lException, aMessage);
     throw lException;
   }
 }
@@ -124,20 +165,23 @@ SigBusGuard::SigBusGuard(const std::string& aMessage) :
 SigBusGuard::~SigBusGuard()
 {
   // 1) Restore the original signal handler for SIGBUS
-  sigaction(SIGBUS, &mOriginalAction, NULL);
-  std::cout << "Restoring original signal handler" << std::endl;
+  if (sigaction(SIGBUS, &mOriginalAction, NULL) != 0)
+    log(Error(), "Failed to re-register old SIGBUS handler (in SigBusGuard destructor); errno=", Integer(errno), ", meaning ", Quote (strerror(errno)));
+  else
+    std::cout << "Restored original signal handler" << std::endl;
 
   // 2) Update this thread's signal mask to block SIGBUS again
+  const int lErrNo = pthread_sigmask(SIG_SETMASK, &mOriginalMask, NULL);
+  if (lErrNo != 0)
+    log(Error(), "Failed to update signal mask in SigBusGuard constructor; errno=", Integer(lErrNo), ", meaning ", Quote (strerror(lErrNo)));
 }
 
 
 void SigBusGuard::handle(int aSignal)
 {
   // Jump back to the point in the stack described by sEnv (as set by sigsetjmp), with sigsetjmp now returning SIGBUS
-  if (aSignal == SIGBUS) {
-    // FIXME: Check return code
+  if (aSignal == SIGBUS)
     siglongjmp(sEnv, aSignal);
-  }
 }
 
 }
