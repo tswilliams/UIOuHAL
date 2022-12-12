@@ -113,7 +113,7 @@ namespace uhal {
     }
 
     // //Now that everything created sucessfully, we can deal with signal handling
-    // SetupSignalHandler();
+    SetupSignalHandler();
   }
 
   UIO::~UIO () {

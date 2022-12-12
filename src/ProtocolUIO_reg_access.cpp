@@ -87,7 +87,7 @@ public:
 
   ~SigBusGuard();
 
-  void blockSIGBUS();
+  static void blockSIGBUS();
 
 private:
   static void handle(int);
@@ -122,7 +122,7 @@ SigBusGuard::SigBusGuard(const std::string& aMessage) :
   mLockGuard(sMutex)
 {
   // 1) Register our signal handler for SIGBUS, saving original in mOriginalAction
-  std::cout << "Registering our signal handler" << std::endl;
+  log(Debug(), "Registering uHAL SIGBUS handler");
   mAction.sa_handler = SigBusGuard::handle;
   sigemptyset(&mAction.sa_mask);
   if (sigaction(SIGBUS, &mAction, &mOriginalAction) != 0) {
@@ -168,7 +168,7 @@ SigBusGuard::~SigBusGuard()
   if (sigaction(SIGBUS, &mOriginalAction, NULL) != 0)
     log(Error(), "Failed to re-register old SIGBUS handler (in SigBusGuard destructor); errno=", Integer(errno), ", meaning ", Quote (strerror(errno)));
   else
-    std::cout << "Restored original signal handler" << std::endl;
+    log(Debug(), "Restored original SIGBUS handler");
 
   // 2) Update this thread's signal mask to block SIGBUS again
   const int lErrNo = pthread_sigmask(SIG_SETMASK, &mOriginalMask, NULL);
@@ -233,11 +233,13 @@ void static signal_handler(int sig){
 namespace uhal {  
 
   void UIO::SetupSignalHandler(){
-    //this is here so the signal_handler can stay static
+    SigBusGuard::blockSIGBUS();
+    /*//this is here so the signal_handler can stay static
     memset(&saBusError,0,sizeof(saBusError)); //Clear struct
     saBusError.sa_handler = signal_handler; //assign signal handler
     sigemptyset(&saBusError.sa_mask);
     sigaction(SIGBUS, &saBusError,&saBusError_old);  //install new signal handler (save the old one)
+    */
   }
   void UIO::RemoveSignalHandler(){    
     sigaction(SIGBUS,&saBusError_old,NULL); //restore the signal handler from before creation for SIGBUS
