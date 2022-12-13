@@ -10,7 +10,7 @@
 
 // Default register names to read
 #define DEFUALT_LOCAL_REGISTER  "PL_MEM.ARM.CPU_LOAD"
-#define DEFAULT_REMOTE_REGISTER "CM_V_INFO.GIT_HASH_1" 
+#define DEFAULT_REMOTE_REGISTER "F1_CM_FW_INFO.GIT_HASH_1" 
 #define DEFAULT_MMAP_REGISTER   "info.magic"
 
 namespace po = boost::program_options;
