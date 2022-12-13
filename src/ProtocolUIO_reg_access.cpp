@@ -83,9 +83,11 @@ UHAL_DEFINE_EXCEPTION_CLASS ( SignalNotBlocked , "Exception associated with SIGB
 
 class SigBusGuard {
 public:
-  SigBusGuard(const std::string&);
+  SigBusGuard();
 
   ~SigBusGuard();
+
+  void protect(const std::function<void()>&, const std::string&);
 
   static void blockSIGBUS();
 
@@ -98,10 +100,12 @@ private:
 
   static std::mutex sMutex;
   static sigjmp_buf sEnv;
+  volatile static sig_atomic_t sProtected;
 };
 
 std::mutex SigBusGuard::sMutex;
 sigjmp_buf SigBusGuard::sEnv;
+volatile sig_atomic_t SigBusGuard::sProtected = 0;
 
 
 void SigBusGuard::blockSIGBUS()
@@ -118,7 +122,7 @@ void SigBusGuard::blockSIGBUS()
 }
 
 
-SigBusGuard::SigBusGuard(const std::string& aMessage) :
+SigBusGuard::SigBusGuard() :
   mLockGuard(sMutex)
 {
   // 1) Register our signal handler for SIGBUS, saving original in mOriginalAction
@@ -149,16 +153,29 @@ SigBusGuard::SigBusGuard(const std::string& aMessage) :
     log(lExc, "SIGBUS must be blocked (by all threads) before using SigBusGuard");
     throw lExc;
   }
+}
 
-  // 3) Raise exception with supplied message if SIGBUS received
-  //    Note: First time sigsetjmp is called it just stores the context of where it is called
-  //          and returns 0. If a signal is received and siglongjmp is called in the handler,
-  //          then the thread will return here and sigsetjmp will then return that signal
+
+void SigBusGuard::protect(const std::function<void()>& aAccess, const std::string& aMessage)
+{
+  sProtected = 1;
+
+  // First time sigsetjmp is called it just stores the context of where it is called
+  // and returns 0. If a signal is received and siglongjmp is called in the handler,
+  // then the thread will return here and sigsetjmp will then return that signal
+  // NOTE: HW access must wrapped in a function and invoked in this function because if
+  // siglongjmp is called then it must be called before function containing sigsetjmp returns
   if (SIGBUS == sigsetjmp(sEnv,1)) {
+    // Raise exception with supplied message if SIGBUS received
+    sProtected = 0;
     exception::SigBusError lException;
     log (lException, aMessage);
     throw lException;
   }
+  else
+    aAccess();
+
+  sProtected = 0;
 }
 
 
@@ -179,6 +196,13 @@ SigBusGuard::~SigBusGuard()
 
 void SigBusGuard::handle(int aSignal)
 {
+  // Warn users if SIGBUS raised outside of 'protect' function, as indicates that the offending code
+  // needs to be modified so that offending line is wrapped by the 'protect' function
+  if (sProtected == 0) {
+    char message[] = "WARNING: A uHAL SigBusGuard has been constructed but SIGBUS was received outside of the 'protect' method. This will cause *undefined behaviour*.\nAfter creating a uhal::SigBusGuard instance, you must run any code that can raise SIGBUS inside the SigBusGuard::protect method (using its std::function argument).\n";
+    write(STDOUT_FILENO, message, strlen(message));
+  }
+
   // Jump back to the point in the stack described by sEnv (as set by sigsetjmp), with sigsetjmp now returning SIGBUS
   if (aSignal == SIGBUS)
     siglongjmp(sEnv, aSignal);
@@ -217,8 +241,8 @@ void SigBusGuard::handle(int aSignal)
   if (true) {\
     char error_message[] = "Reg: 0x00000000"; \
     snprintf(error_message,strlen(error_message),"Reg: 0x%08X",ADDRESS); \
-    uhal::SigBusGuard lGuard(error_message);\
-    ACCESS;\
+    uhal::SigBusGuard lGuard;\
+    lGuard.protect([&] {ACCESS;}, error_message);\
   }
 
 
